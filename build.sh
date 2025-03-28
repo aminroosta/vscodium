@@ -14,6 +14,7 @@ if [[ "${SHOULD_BUILD}" == "yes" ]]; then
 
   export NODE_OPTIONS="--max-old-space-size=8192"
 
+  npm install
   npm run monaco-compile-check
   npm run valid-layers-check
 
