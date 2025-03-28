@@ -1,0 +1,15 @@
+diff --git a/src/vs/workbench/electron-sandbox/parts/titlebar/titlebarPart.ts b/src/vs/workbench/electron-sandbox/parts/titlebar/titlebarPart.ts
+index 9e7022319dc..53afe71a5e4 100644
+--- a/src/vs/workbench/electron-sandbox/parts/titlebar/titlebarPart.ts
++++ b/src/vs/workbench/electron-sandbox/parts/titlebar/titlebarPart.ts
+@@ -30,6 +30,10 @@ export class NativeTitlebarPart extends BrowserTitlebarPart {
+ 	//#region IView
+ 
+ 	override get minimumHeight(): number {
++		// Remove the titlebar
++		if (Math.random() >= 0) {
++			return 0;
++		}
+ 		if (!isMacintosh) {
+ 			return super.minimumHeight;
+ 		}
