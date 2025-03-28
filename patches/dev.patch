@@ -1,0 +1,212 @@
+diff --git a/src/vs/platform/window/common/window.ts b/src/vs/platform/window/common/window.ts
+index e230d1a09a5..d9436731eeb 100644
+--- a/src/vs/platform/window/common/window.ts
++++ b/src/vs/platform/window/common/window.ts
+@@ -163,12 +163,20 @@ export interface IWindowSettings {
+ 	readonly clickThroughInactive: boolean;
+ 	readonly newWindowProfile: string;
+ 	readonly density: IDensitySettings;
++	readonly workspacesOverlay: IWorkspacesOverlay;
+ }
+ 
+ export interface IDensitySettings {
+ 	readonly editorTabHeight: 'default' | 'compact';
+ }
+ 
++export interface IWorkspacesOverlay {
++	readonly enabled: boolean;
++	readonly hotKey: string;
++	readonly alwaysOnTop: boolean;
++	readonly snapMode: 'bottom' | 'top' | 'left' | 'right';
++}
++
+ export const enum TitleBarSetting {
+ 	TITLE_BAR_STYLE = 'window.titleBarStyle',
+ 	CUSTOM_TITLE_BAR_VISIBILITY = 'window.customTitleBarVisibility',
+diff --git a/src/vs/platform/windows/electron-main/windowImpl.ts b/src/vs/platform/windows/electron-main/windowImpl.ts
+index 7ea47d522f8..7584d80ec64 100644
+--- a/src/vs/platform/windows/electron-main/windowImpl.ts
++++ b/src/vs/platform/windows/electron-main/windowImpl.ts
+@@ -3,7 +3,7 @@
+  *  Licensed under the MIT License. See License.txt in the project root for license information.
+  *--------------------------------------------------------------------------------------------*/
+ 
+-import electron, { BrowserWindowConstructorOptions } from 'electron';
++import electron, { BrowserWindow, BrowserWindowConstructorOptions, screen, app, globalShortcut } from 'electron';
+ import { DeferredPromise, RunOnceScheduler, timeout } from '../../../base/common/async.js';
+ import { CancellationToken } from '../../../base/common/cancellation.js';
+ import { toErrorMessage } from '../../../base/common/errorMessage.js';
+@@ -32,7 +32,7 @@ import { IApplicationStorageMainService, IStorageMainService } from '../../stora
+ import { ITelemetryService } from '../../telemetry/common/telemetry.js';
+ import { ThemeIcon } from '../../../base/common/themables.js';
+ import { IThemeMainService } from '../../theme/electron-main/themeMainService.js';
+-import { getMenuBarVisibility, IFolderToOpen, INativeWindowConfiguration, IWindowSettings, IWorkspaceToOpen, MenuBarVisibility, hasNativeTitlebar, useNativeFullScreen, useWindowControlsOverlay, DEFAULT_CUSTOM_TITLEBAR_HEIGHT, TitlebarStyle } from '../../window/common/window.js';
++import { getMenuBarVisibility, IFolderToOpen, INativeWindowConfiguration, IWindowSettings, IWorkspaceToOpen, IWorkspacesOverlay, MenuBarVisibility, hasNativeTitlebar, useNativeFullScreen, useWindowControlsOverlay, DEFAULT_CUSTOM_TITLEBAR_HEIGHT, TitlebarStyle } from '../../window/common/window.js';
+ import { defaultBrowserWindowOptions, IWindowsMainService, OpenContext, WindowStateValidator } from './windows.js';
+ import { ISingleFolderWorkspaceIdentifier, IWorkspaceIdentifier, isSingleFolderWorkspaceIdentifier, isWorkspaceIdentifier, toWorkspaceIdentifier } from '../../workspace/common/workspace.js';
+ import { IWorkspacesManagementMainService } from '../../workspaces/electron-main/workspacesManagementMainService.js';
+@@ -206,9 +206,109 @@ export abstract class BaseWindow extends Disposable implements IBaseWindow {
+ 			this._register(this.onDidLeaveFullScreen(() => {
+ 				this.joinNativeFullScreenTransition?.complete(true);
+ 			}));
++
++			this.handleWorkspacesOverlay();
+ 		}
+ 	}
+ 
++	protected handleWorkspacesOverlay() {
++		const {
++			enabled = false,
++			hotKey = 'CommandOrControl+Enter',
++			alwaysOnTop = true,
++			snapMode = 'bottom'
++		} = this.configurationService.getValue<IWorkspacesOverlay | undefined>('window.workspacesOverlay') || {};
++
++		if (!enabled) {
++			return;
++		}
++
++		const getOverlayWindow = () => {
++			const windows = BrowserWindow.getAllWindows();
++			return windows.find(win => win.isVisibleOnAllWorkspaces());
++		};
++
++		const setOverlayWindow = () => {
++			const windows = BrowserWindow.getAllWindows();
++			const win = windows[0];
++			win.setAlwaysOnTop(alwaysOnTop);
++			win.setVisibleOnAllWorkspaces(true, {
++				visibleOnFullScreen: true,
++			});
++		};
++
++		// Snap the window to top, bottom, left or right
++		const snapWindow = (win: BrowserWindow) => {
++			const [winWidth, winHeight] = win.getSize();
++			const currentDisplay = screen.getDisplayMatching(win.getBounds());
++			const { x: dispX, y: dispY, width: dispWidth, height: dispHeight } = currentDisplay.bounds;
++
++			if (snapMode === 'bottom') {
++				win.setBounds({
++					x: dispX,
++					y: dispY + dispHeight - winHeight,
++					width: dispWidth,
++					height: winHeight
++				});
++			} else if (snapMode === 'top') {
++				win.setBounds({
++					x: dispX,
++					y: dispY,
++					width: dispWidth,
++					height: winHeight
++				});
++			} else if (snapMode === 'left') {
++				win.setBounds({
++					x: dispX,
++					y: dispY,
++					width: winWidth,
++					height: dispHeight
++				});
++			} else if (snapMode === 'right') {
++				win.setBounds({
++					x: dispX + dispWidth - winWidth,
++					y: dispY,
++					width: winWidth,
++					height: dispHeight
++				});
++			}
++		};
++
++		const toggleVisiblity = () => {
++			const win = getOverlayWindow();
++			if (!win) { return; }
++
++			if (!win.isVisibleOnAllWorkspaces()) {
++				win.setAlwaysOnTop(alwaysOnTop);
++				win.setVisibleOnAllWorkspaces(true, {
++					visibleOnFullScreen: true,
++				});
++			}
++
++			if (win.isVisible()) {
++				win.hide();
++				// Give the focus back to other applications if there is no other window
++				if (!BrowserWindow.getFocusedWindow()) {
++					app.hide();
++				}
++			} else {
++				win.showInactive();
++				snapWindow(win);
++				win.focus();
++			}
++		};
++
++		// Register global hotkey and setup the overlay window
++		app.whenReady().then(() => {
++			if (!getOverlayWindow()) {
++				setOverlayWindow();
++			}
++			if (!globalShortcut.isRegistered(hotKey)) {
++				globalShortcut.register(hotKey, toggleVisiblity);
++			}
++		});
++	}
++
+ 	constructor(
+ 		protected readonly configurationService: IConfigurationService,
+ 		protected readonly stateService: IStateService,
+@@ -956,8 +1056,14 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
+ 				electron.app.setProxy({ proxyRules, proxyBypassRules, pacScript: '' });
+ 			}
+ 		}
++
++		if (isMacintosh && e?.affectsConfiguration('window.workspacesOverlay')) {
++			globalShortcut.unregisterAll();
++			this.handleWorkspacesOverlay();
++		}
+ 	}
+ 
++
+ 	addTabbedWindow(window: ICodeWindow): void {
+ 		if (isMacintosh && window.win) {
+ 			this._win.addTabbedWindow(window.win);
+diff --git a/src/vs/workbench/electron-sandbox/desktop.contribution.ts b/src/vs/workbench/electron-sandbox/desktop.contribution.ts
+index c420ccfefc3..53573f21a2d 100644
+--- a/src/vs/workbench/electron-sandbox/desktop.contribution.ts
++++ b/src/vs/workbench/electron-sandbox/desktop.contribution.ts
+@@ -269,6 +269,35 @@ import { MAX_ZOOM_LEVEL, MIN_ZOOM_LEVEL } from '../../platform/window/electron-s
+ 				'scope': ConfigurationScope.APPLICATION,
+ 				'included': isMacintosh
+ 			},
++			'window.workspacesOverlay': {
++				'type': 'object',
++				'description': localize('window.workspacesOverlay', "macOS-specific feature to keep the main window on top of all workspaces."),
++				'scope': ConfigurationScope.APPLICATION,
++				'included': isMacintosh,
++				'properties': {
++					'enabled': {
++						'type': 'boolean',
++						'default': false,
++						'description': localize('window.workspacesOverlay.enabled', "Enables a macOS-specific feature that keeps the main window on top of all workspaces, visible across fullscreen apps, dynamically sized to the primary display, and toggleable via a keyboard shortcut when set to true."),
++					},
++					'hotKey': {
++						'type': 'string',
++						'default': 'CommandOrControl+Enter',
++						'description': localize('window.workspacesOverlay.hotKey', "Specifies the keyboard shortcut used to toggle the workspaces overlay on and off, following the Electron accelerator format (see https://www.electronjs.org/docs/latest/api/accelerator). Only applicable when the overlay is enabled."),
++					},
++					'alwaysOnTop': {
++						'type': 'boolean',
++						'default': true,
++						'description': localize('window.workspacesOverlay.alwaysOnTop', "When true, ensures the overlay remains above all other windows and fullscreen applications on macOS, enhancing accessibility across workspaces."),
++					},
++					'snapMode': {
++						'type': 'string',
++						'enum': ['bottom', 'top', 'left', 'right'],
++						'default': 'bottom',
++						'description': localize('window.workspacesOverlay.snapMode', "Defines the edge of the screen where the overlay docks when active. Options include 'bottom', 'top', 'left', or 'right', adapting to user preference and display layout."),
++					},
++				}
++			},
+ 			'window.clickThroughInactive': {
+ 				'type': 'boolean',
+ 				'default': true,

@@ -1,3 +1,15 @@
+* Notes:
+  * clone https://github.com/aminroosta/vscodium
+    * find the commit hash in `stable.json`
+  * clone https://github.com/aminroosta/vscode
+    * checkout the dev branch
+    * git rebase on the commit hash in `stable.json`
+    * git diff <commit hash>..HEAD > ../vscodium/patches/dev.patch
+  * install dependencies in ./docs/howto-build.md
+  * `./dev/build.sh`
+
+---
+
 <div id="vscodium-logo" align="center">
     <br />
     <img src="./icons/stable/codium_cnl.svg" alt="VSCodium Logo" width="200"/>
